@@ -1,6 +1,6 @@
 """
 MathPad - 手写数学公式识别工具
-Step 1: 基础窗口
+Step 2: 手写功能
 """
 
 import sys
@@ -9,8 +9,83 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFrame
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtGui import QFont, QPainter, QPen, QColor
+
+
+class Canvas(QFrame):
+    """手写画布"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.strokes = []          # 所有完成的笔画
+        self.current_stroke = []   # 当前正在画的笔画
+        self.setMinimumHeight(280)
+        self.setStyleSheet("""
+            QFrame {
+                background: white;
+                border: 2px solid #888;
+                border-radius: 4px;
+            }
+        """)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        # 开启鼠标追踪，确保 mouseMoveEvent 在不按鼠标时也能触发（本项目中不需，
+        # 但设为 True 可保证按住鼠标移动时事件流畅）
+        self.setMouseTracking(True)
+
+    # ---- 鼠标事件 ----
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.current_stroke = [event.pos()]
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.current_stroke:
+            self.current_stroke.append(event.pos())
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.current_stroke:
+            self.current_stroke.append(event.pos())
+            self.strokes.append(self.current_stroke)
+            self.current_stroke = []
+            self.update()
+        super().mouseReleaseEvent(event)
+
+    # ---- 绘制 ----
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        pen = QPen(QColor(0, 0, 0), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+
+        # 绘制已完成的笔画
+        for stroke in self.strokes:
+            self._draw_stroke(painter, stroke)
+
+        # 绘制当前正在画的笔画
+        if self.current_stroke:
+            self._draw_stroke(painter, self.current_stroke)
+
+        painter.end()
+
+    def _draw_stroke(self, painter, stroke):
+        if len(stroke) < 2:
+            # 单点：画一个小圆点
+            p = stroke[0]
+            painter.drawPoint(p)
+            return
+        for i in range(len(stroke) - 1):
+            painter.drawLine(stroke[i], stroke[i + 1])
+
+    # ---- 清空 ----
+    def clear(self):
+        self.strokes = []
+        self.current_stroke = []
+        self.update()
 
 
 class MathPadWindow(QMainWindow):
@@ -21,7 +96,6 @@ class MathPadWindow(QMainWindow):
         self._init_ui()
 
     def _init_ui(self):
-        # 中心组件
         central = QWidget()
         self.setCentralWidget(central)
 
@@ -30,16 +104,7 @@ class MathPadWindow(QMainWindow):
         main_layout.setSpacing(8)
 
         # ---- 书写区域 ----
-        self.canvas = QFrame()
-        self.canvas.setMinimumHeight(280)
-        self.canvas.setStyleSheet("""
-            QFrame {
-                background: white;
-                border: 2px solid #888;
-                border-radius: 4px;
-            }
-        """)
-        self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+        self.canvas = Canvas()
 
         main_layout.addWidget(self.canvas, stretch=1)
 
@@ -47,7 +112,6 @@ class MathPadWindow(QMainWindow):
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
 
-        # 输出框
         result_label = QLabel("Result:")
         font = QFont()
         font.setPointSize(12)
