@@ -1,28 +1,108 @@
 """
 MathPad - 手写数学公式识别工具
-Step 1-5: 窗口 + 手写 + 按钮 + 图片生成 + 识别
 """
-
 import sys
 import subprocess
 import os
+import re
+import threading
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFrame
+    QPushButton, QFrame, QSlider, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import Qt, QPoint, QTimer
 from PyQt6.QtGui import QFont, QPainter, QPen, QColor, QImage
 
+
+# ═══════════════════════════════════════════
+# LaTeX → Unicode 转换
+# ═══════════════════════════════════════════
+
+_SYMBOLS = {
+    r'\alpha': 'α', r'\beta': 'β', r'\gamma': 'γ', r'\delta': 'δ',
+    r'\epsilon': 'ε', r'\varepsilon': 'ε', r'\zeta': 'ζ', r'\eta': 'η',
+    r'\theta': 'θ', r'\vartheta': 'ϑ', r'\iota': 'ι', r'\kappa': 'κ',
+    r'\lambda': 'λ', r'\mu': 'μ', r'\nu': 'ν', r'\xi': 'ξ',
+    r'\pi': 'π', r'\varpi': 'ϖ', r'\rho': 'ρ', r'\sigma': 'σ',
+    r'\tau': 'τ', r'\upsilon': 'υ', r'\phi': 'φ', r'\varphi': 'φ',
+    r'\chi': 'χ', r'\psi': 'ψ', r'\omega': 'ω',
+    r'\Gamma': 'Γ', r'\Delta': 'Δ', r'\Theta': 'Θ', r'\Lambda': 'Λ',
+    r'\Xi': 'Ξ', r'\Pi': 'Π', r'\Sigma': 'Σ', r'\Omega': 'Ω',
+    r'\times': '×', r'\div': '÷', r'\pm': '±', r'\cdot': '·',
+    r'\circ': '○', r'\bullet': '•', r'\star': '★', r'\ast': '∗',
+    r'\leq': '≤', r'\geq': '≥', r'\neq': '≠', r'\approx': '≈',
+    r'\equiv': '≡', r'\sim': '∼', r'\propto': '∝',
+    r'\rightarrow': '→', r'\to': '→', r'\leftarrow': '←', r'\gets': '←',
+    r'\Rightarrow': '⇒', r'\Leftarrow': '⇐', r'\leftrightarrow': '↔',
+    r'\Leftrightarrow': '⇔', r'\mapsto': '↦',
+    r'\sum': '∑', r'\prod': '∏', r'\int': '∫', r'\iint': '∬',
+    r'\oint': '∮', r'\bigcup': '⋃', r'\bigcap': '⋂',
+    r'\infty': '∞', r'\partial': '∂', r'\nabla': '∇',
+    r'\forall': '∀', r'\exists': '∃', r'\emptyset': '∅',
+    r'\sqrt': '√', r'\angle': '∠', r'\parallel': '∥', r'\perp': '⊥',
+    r'\in': '∈', r'\notin': '∉', r'\subset': '⊂', r'\supset': '⊃',
+    r'\subseteq': '⊆', r'\wedge': '∧', r'\vee': '∨', r'\neg': '¬',
+    r'\ldots': '…', r'\cdots': '⋯', r'\vdots': '⋮', r'\ddots': '⋱',
+    r'\prime': '′', r'\hbar': 'ℏ', r'\ell': 'ℓ',
+}
+
+_sorted_keys = sorted(_SYMBOLS.keys(), key=len, reverse=True)
+_SYMBOL_RE = re.compile('|'.join(re.escape(k) for k in _sorted_keys))
+
+_SUPER = str.maketrans('0123456789+-=()', '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾')
+_SUB   = str.maketrans('0123456789+-=()', '₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎')
+
+
+def latex_to_unicode(latex: str) -> str:
+    """LaTeX → 可复制的 Unicode 数学文本"""
+    s = latex.strip()
+
+    # 去掉格式命令
+    for cmd in (r'\mathbf', r'\boldsymbol', r'\mathit', r'\mathrm',
+                r'\mathcal', r'\text', r'\scriptstyle', r'\displaystyle',
+                r'\limits', r'\scriptstyle'):
+        s = re.sub(re.escape(cmd) + r'\{([^}]*)\}', r'\1', s)
+
+    # 上标 ^{...}
+    def _super(m):
+        inner = m.group(1)
+        return inner.translate(_SUPER) if len(inner) == 1 else _to_super(inner)
+    s = re.sub(r'\^\{([^}]*)\}', _super, s)
+    s = re.sub(r'\^(\S)', lambda m: m.group(1).translate(_SUPER), s)
+
+    # 下标 _{...}
+    def _sub(m):
+        inner = m.group(1)
+        return inner.translate(_SUB) if len(inner) == 1 else '_' + inner
+    s = re.sub(r'_\{([^}]*)\}', _sub, s)
+    s = re.sub(r'_(\S)', lambda m: m.group(1).translate(_SUB), s)
+
+    # 去花括号
+    s = re.sub(r'\{([^{}]*)\}', r'\1', s)
+    # 替换符号
+    s = _SYMBOL_RE.sub(lambda m: _SYMBOLS[m.group()], s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
+def _to_super(s: str) -> str:
+    return re.sub(r'[a-zA-Z0-9+\-=()]',
+                  lambda m: m.group().translate(_SUPER), s)
+
+
+# ═══════════════════════════════════════════
+# Canvas
+# ═══════════════════════════════════════════
 
 class Canvas(QFrame):
     """手写画布"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.strokes = []          # 所有完成的笔画
-        self.current_stroke = []   # 当前正在画的笔画
+        self.strokes = []
+        self.current_stroke = []
         self.setMinimumHeight(280)
         self.setStyleSheet("""
             QFrame {
@@ -32,21 +112,16 @@ class Canvas(QFrame):
             }
         """)
         self.setCursor(Qt.CursorShape.CrossCursor)
-        # 开启鼠标追踪，确保 mouseMoveEvent 在不按鼠标时也能触发（本项目中不需，
-        # 但设为 True 可保证按住鼠标移动时事件流畅）
         self.setMouseTracking(True)
 
-    # ---- 鼠标事件 ----
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.current_stroke = [event.pos()]
-        super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if self.current_stroke:
             self.current_stroke.append(event.pos())
             self.update()
-        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self.current_stroke:
@@ -54,95 +129,86 @@ class Canvas(QFrame):
             self.strokes.append(self.current_stroke)
             self.current_stroke = []
             self.update()
-        super().mouseReleaseEvent(event)
 
-    # ---- 绘制 ----
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
         pen = QPen(QColor(0, 0, 0), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
-
-        # 绘制已完成的笔画
         for stroke in self.strokes:
             self._draw_stroke(painter, stroke)
-
-        # 绘制当前正在画的笔画
         if self.current_stroke:
             self._draw_stroke(painter, self.current_stroke)
-
         painter.end()
 
     def _draw_stroke(self, painter, stroke):
         if len(stroke) < 2:
-            # 单点：画一个小圆点
-            p = stroke[0]
-            painter.drawPoint(p)
+            painter.drawPoint(stroke[0])
             return
         for i in range(len(stroke) - 1):
             painter.drawLine(stroke[i], stroke[i + 1])
 
-    # ---- 清空 ----
     def clear(self):
         self.strokes = []
         self.current_stroke = []
         self.update()
 
-    # ---- 笔迹转图片 (Step 4) ----
     def to_image(self, filepath="temp.png"):
         """将笔迹渲染为 PNG 图片"""
         image = QImage(self.size(), QImage.Format.Format_RGB32)
         image.fill(QColor(255, 255, 255))
-
         painter = QPainter(image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
         pen = QPen(QColor(0, 0, 0), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
-
         for stroke in self.strokes:
             self._draw_stroke(painter, stroke)
-
         painter.end()
         image.save(filepath)
         return filepath
 
 
+# ═══════════════════════════════════════════
+# Main Window
+# ═══════════════════════════════════════════
+
 class MathPadWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MathPad")
-        self.setFixedSize(800, 400)
-        self._proc = None  # 常驻识别进程
+        self.setFixedSize(800, 420)
+        self._proc = None
+        self._model_ready = False
+        self._last_latex = ""
+        self._display_mode = 0  # 0=Text  1=LaTeX
         self._init_ui()
+        self._start_worker()
 
-    def _ensure_worker(self):
-        """启动常驻识别进程（仅首次调用时加载模型）"""
-        if self._proc is not None:
-            return True
+    # ── 进程管理 ──
 
+    def _start_worker(self):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         script = os.path.join(base_dir, "unimernet_infer.py")
-
         self._proc = subprocess.Popen(
             [r"D:\anaconda\envs\unimernet\python.exe", script],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True,
         )
-        # 等待模型加载完成（READY信号）
-        ready = self._proc.stdout.readline()
-        if ready.strip() != "READY":
-            self.result_line.setText("模型启动失败")
-            self._proc = None
-            return False
-        return True
+
+        def wait_ready():
+            line = self._proc.stdout.readline()
+            if line.strip() == "READY":
+                self._model_ready = True
+
+        threading.Thread(target=wait_ready, daemon=True).start()
+
+    def _on_model_ready(self):
+        if self._model_ready:
+            self._ready_timer.stop()
+            self.result_line.setPlaceholderText("Write & click Recognize...")
 
     def closeEvent(self, event):
-        """关闭窗口时终止识别进程"""
         if self._proc is not None:
             try:
                 self._proc.stdin.write("__EXIT__\n")
@@ -152,71 +218,118 @@ class MathPadWindow(QMainWindow):
                 self._proc.kill()
         super().closeEvent(event)
 
+    # ── 显示 ──
+
+    def _show_result(self):
+        if self._display_mode == 0:
+            self.result_line.setText(latex_to_unicode(self._last_latex))
+        else:
+            self.result_line.setText(self._last_latex)
+
+    # ── UI ──
+
     def _init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(12, 12, 12, 8)
+        main_layout.setSpacing(6)
 
-        # ---- 书写区域 ----
         self.canvas = Canvas()
-
         main_layout.addWidget(self.canvas, stretch=1)
 
-        # ---- 底部控制栏 ----
-        bottom = QHBoxLayout()
-        bottom.setSpacing(8)
-
-        result_label = QLabel("Result:")
         font = QFont()
         font.setPointSize(12)
-        result_label.setFont(font)
-        bottom.addWidget(result_label)
 
+        # 结果行
+        result_row = QHBoxLayout()
+        result_row.setSpacing(8)
+        result_row.addWidget(QLabel("Result:", font=font))
         self.result_line = QLineEdit()
         self.result_line.setReadOnly(True)
-        self.result_line.setPlaceholderText("识别结果将显示在这里...")
+        self.result_line.setPlaceholderText("Model loading...")
         self.result_line.setFont(font)
         self.result_line.setMinimumHeight(30)
-        bottom.addWidget(self.result_line, stretch=1)
+        result_row.addWidget(self.result_line, stretch=1)
+        main_layout.addLayout(result_row)
 
-        # ---- 按钮 (Step 3) ----
-        clear_btn = QPushButton("Clear")
-        clear_btn.clicked.connect(self.canvas.clear)
-        bottom.addWidget(clear_btn)
+        # 控制行
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setSpacing(8)
 
-        recognize_btn = QPushButton("Recognize")
-        recognize_btn.clicked.connect(self._on_recognize)
-        bottom.addWidget(recognize_btn)
+        self.mode_label_left = QLabel("<b>Text</b>")
+        ctrl_row.addWidget(self.mode_label_left)
 
-        main_layout.addLayout(bottom)
+        self.mode_slider = QSlider(Qt.Orientation.Horizontal)
+        self.mode_slider.setRange(0, 1)
+        self.mode_slider.setValue(0)
+        self.mode_slider.setFixedWidth(40)
+        self.mode_slider.setStyleSheet("""
+            QSlider::groove:horizontal { background:#ccc; height:6px; border-radius:3px; }
+            QSlider::handle:horizontal { background:#0078d4; width:16px; margin:-5px 0; border-radius:8px; }
+        """)
+        self.mode_slider.valueChanged.connect(self._on_mode_changed)
+        ctrl_row.addWidget(self.mode_slider)
+
+        self.mode_label_right = QLabel("LaTeX")
+        ctrl_row.addWidget(self.mode_label_right)
+
+        ctrl_row.addStretch()
+
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.clicked.connect(self._on_clear)
+        ctrl_row.addWidget(self.clear_btn)
+
+        self.recognize_btn = QPushButton("Recognize")
+        self.recognize_btn.clicked.connect(self._on_recognize)
+        ctrl_row.addWidget(self.recognize_btn)
+
+        main_layout.addLayout(ctrl_row)
+
+        self._ready_timer = QTimer()
+        self._ready_timer.timeout.connect(self._on_model_ready)
+        self._ready_timer.start(200)
+
+    # ── 回调 ──
+
+    def _on_mode_changed(self, value):
+        self._display_mode = value
+        self.mode_label_left.setText("<b>Text</b>" if value == 0 else "Text")
+        self.mode_label_right.setText("<b>LaTeX</b>" if value == 1 else "LaTeX")
+        if self._last_latex:
+            self._show_result()
+
+    def _on_clear(self):
+        if not self._model_ready:
+            return
+        self.canvas.clear()
+        self._last_latex = ""
+        self.result_line.clear()
 
     def _on_recognize(self):
-        """Step 4: 笔迹 → 图片  →  Step 5: UniMERNet 识别（常驻进程）"""
+        if not self._model_ready:
+            self.result_line.setText("Model Initializing...")
+            return
+
         base_dir = os.path.dirname(os.path.abspath(__file__))
         filepath = self.canvas.to_image(os.path.join(base_dir, "temp.png"))
 
-        # 首次调用需加载模型，后续复用常驻进程
-        is_first = self._proc is None
-        self.result_line.setText("正在加载模型..." if is_first else "识别中...")
+        self.result_line.setText("识别中...")
         QApplication.processEvents()
-
-        if not self._ensure_worker():
-            return
 
         try:
             self._proc.stdin.write(filepath + "\n")
             self._proc.stdin.flush()
-            result = self._proc.stdout.readline().strip()
-            if result.startswith("ERROR:"):
-                self.result_line.setText(f"识别失败: {result[6:]}")
+            raw = self._proc.stdout.readline().strip()
+            if raw.startswith("ERROR:"):
+                self.result_line.setText(f"识别失败: {raw[6:]}")
             else:
-                self.result_line.setText(result)
+                self._last_latex = raw
+                self._show_result()
         except Exception as e:
             self.result_line.setText(f"通信失败: {e}")
             self._proc = None
+            self._model_ready = False
 
 
 def main():
