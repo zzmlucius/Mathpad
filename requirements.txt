@@ -1,0 +1,8 @@
+PyQt6>=6.5
+torch>=2.0
+torchvision
+transformers==4.42.4
+numpy<2.0
+unimernet
+Pillow
+huggingface_hub
