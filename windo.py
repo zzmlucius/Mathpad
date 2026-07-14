@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QFrame
 )
 from PyQt6.QtCore import Qt, QPoint
-from PyQt6.QtGui import QFont, QPainter, QPen, QColor
+from PyQt6.QtGui import QFont, QPainter, QPen, QColor, QImage
 
 
 class Canvas(QFrame):
@@ -87,6 +87,25 @@ class Canvas(QFrame):
         self.current_stroke = []
         self.update()
 
+    # ---- 笔迹转图片 (Step 4) ----
+    def to_image(self, filepath="temp.png"):
+        """将笔迹渲染为 PNG 图片"""
+        image = QImage(self.size(), QImage.Format.Format_RGB32)
+        image.fill(QColor(255, 255, 255))
+
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        pen = QPen(QColor(0, 0, 0), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+
+        for stroke in self.strokes:
+            self._draw_stroke(painter, stroke)
+
+        painter.end()
+        image.save(filepath)
+        return filepath
+
 
 class MathPadWindow(QMainWindow):
     def __init__(self):
@@ -125,7 +144,22 @@ class MathPadWindow(QMainWindow):
         self.result_line.setMinimumHeight(30)
         bottom.addWidget(self.result_line, stretch=1)
 
+        # ---- 按钮 (Step 3) ----
+        clear_btn = QPushButton("Clear")
+        clear_btn.clicked.connect(self.canvas.clear)
+        bottom.addWidget(clear_btn)
+
+        recognize_btn = QPushButton("Recognize")
+        recognize_btn.clicked.connect(self._on_recognize)
+        bottom.addWidget(recognize_btn)
+
         main_layout.addLayout(bottom)
+
+    def _on_recognize(self):
+        """识别按钮回调：笔迹 → 图片 (Step 4) → 后续调识别脚本 (Step 5)"""
+        filepath = self.canvas.to_image()
+        print(f"已保存图片: {filepath}")
+        # Step 5: 调用 subprocess 执行识别脚本
 
 
 def main():
