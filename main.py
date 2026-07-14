@@ -1,6 +1,6 @@
 """
 MathPad - 手写数学公式识别工具
-Step 2: 手写功能
+Step 1-5: 窗口 + 手写 + 按钮 + 图片生成 + 识别
 """
 
 import sys
@@ -156,10 +156,28 @@ class MathPadWindow(QMainWindow):
         main_layout.addLayout(bottom)
 
     def _on_recognize(self):
-        """识别按钮回调：笔迹 → 图片 (Step 4) → 后续调识别脚本 (Step 5)"""
-        filepath = self.canvas.to_image()
-        print(f"已保存图片: {filepath}")
-        # Step 5: 调用 subprocess 执行识别脚本
+        """Step 4: 笔迹 → 图片  →  Step 5: UniMERNet 识别"""
+        import subprocess, os
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        filepath = self.canvas.to_image(os.path.join(base_dir, "temp.png"))
+
+        self.result_line.setText("识别中...")
+        QApplication.processEvents()
+
+        try:
+            script = os.path.join(base_dir, "unimernet_infer.py")
+            result = subprocess.check_output(
+                [r"D:\anaconda\envs\unimernet\python.exe", script, filepath],
+                text=True, timeout=120
+            ).strip()
+            self.result_line.setText(result)
+        except FileNotFoundError:
+            self.result_line.setText("找不到 Python 环境")
+        except subprocess.TimeoutExpired:
+            self.result_line.setText("识别超时")
+        except Exception as e:
+            self.result_line.setText(f"识别失败: {e}")
 
 
 def main():
