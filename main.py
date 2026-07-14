@@ -4,6 +4,9 @@ Step 1-5: 窗口 + 手写 + 按钮 + 图片生成 + 识别
 """
 
 import sys
+import subprocess
+import os
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -112,7 +115,42 @@ class MathPadWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("MathPad")
         self.setFixedSize(800, 400)
+        self._proc = None  # 常驻识别进程
         self._init_ui()
+
+    def _ensure_worker(self):
+        """启动常驻识别进程（仅首次调用时加载模型）"""
+        if self._proc is not None:
+            return True
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        script = os.path.join(base_dir, "unimernet_infer.py")
+
+        self._proc = subprocess.Popen(
+            [r"D:\anaconda\envs\unimernet\python.exe", script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        # 等待模型加载完成（READY信号）
+        ready = self._proc.stdout.readline()
+        if ready.strip() != "READY":
+            self.result_line.setText("模型启动失败")
+            self._proc = None
+            return False
+        return True
+
+    def closeEvent(self, event):
+        """关闭窗口时终止识别进程"""
+        if self._proc is not None:
+            try:
+                self._proc.stdin.write("__EXIT__\n")
+                self._proc.stdin.flush()
+                self._proc.wait(timeout=5)
+            except Exception:
+                self._proc.kill()
+        super().closeEvent(event)
 
     def _init_ui(self):
         central = QWidget()
@@ -156,28 +194,29 @@ class MathPadWindow(QMainWindow):
         main_layout.addLayout(bottom)
 
     def _on_recognize(self):
-        """Step 4: 笔迹 → 图片  →  Step 5: UniMERNet 识别"""
-        import subprocess, os
-
+        """Step 4: 笔迹 → 图片  →  Step 5: UniMERNet 识别（常驻进程）"""
         base_dir = os.path.dirname(os.path.abspath(__file__))
         filepath = self.canvas.to_image(os.path.join(base_dir, "temp.png"))
 
-        self.result_line.setText("识别中...")
+        # 首次调用需加载模型，后续复用常驻进程
+        is_first = self._proc is None
+        self.result_line.setText("正在加载模型..." if is_first else "识别中...")
         QApplication.processEvents()
 
+        if not self._ensure_worker():
+            return
+
         try:
-            script = os.path.join(base_dir, "unimernet_infer.py")
-            result = subprocess.check_output(
-                [r"D:\anaconda\envs\unimernet\python.exe", script, filepath],
-                text=True, timeout=120
-            ).strip()
-            self.result_line.setText(result)
-        except FileNotFoundError:
-            self.result_line.setText("找不到 Python 环境")
-        except subprocess.TimeoutExpired:
-            self.result_line.setText("识别超时")
+            self._proc.stdin.write(filepath + "\n")
+            self._proc.stdin.flush()
+            result = self._proc.stdout.readline().strip()
+            if result.startswith("ERROR:"):
+                self.result_line.setText(f"识别失败: {result[6:]}")
+            else:
+                self.result_line.setText(result)
         except Exception as e:
-            self.result_line.setText(f"识别失败: {e}")
+            self.result_line.setText(f"通信失败: {e}")
+            self._proc = None
 
 
 def main():
