@@ -99,20 +99,29 @@ def _to_super(s: str) -> str:
 class Canvas(QFrame):
     """手写画布"""
 
+    PEN_COLOR = QColor(180, 180, 180)   # 浅灰笔迹
+    BG_COLOR  = "#1e1e1e"
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.strokes = []
         self.current_stroke = []
         self.setMinimumHeight(280)
-        self.setStyleSheet("""
-            QFrame {
-                background: white;
-                border: 2px solid #888;
-                border-radius: 4px;
-            }
-        """)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setMouseTracking(True)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(self.BG_COLOR))
+        pen = QPen(self.PEN_COLOR, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        for stroke in self.strokes:
+            self._draw_stroke(painter, stroke)
+        if self.current_stroke:
+            self._draw_stroke(painter, self.current_stroke)
+        painter.end()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -130,18 +139,6 @@ class Canvas(QFrame):
             self.current_stroke = []
             self.update()
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor(0, 0, 0), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        for stroke in self.strokes:
-            self._draw_stroke(painter, stroke)
-        if self.current_stroke:
-            self._draw_stroke(painter, self.current_stroke)
-        painter.end()
-
     def _draw_stroke(self, painter, stroke):
         if len(stroke) < 2:
             painter.drawPoint(stroke[0])
@@ -155,7 +152,7 @@ class Canvas(QFrame):
         self.update()
 
     def to_image(self, filepath="temp.png"):
-        """将笔迹渲染为 PNG 图片"""
+        """黑底白字 → 白底黑字（给模型用）"""
         image = QImage(self.size(), QImage.Format.Format_RGB32)
         image.fill(QColor(255, 255, 255))
         painter = QPainter(image)
@@ -228,46 +225,105 @@ class MathPadWindow(QMainWindow):
 
     # ── UI ──
 
+    STYLE = """
+        QMainWindow, QWidget {
+            background: #1e1e1e;
+            color: #cccccc;
+            font-family: "Segoe UI", "Cascadia Code", sans-serif;
+            font-size: 13px;
+        }
+        QLineEdit {
+            background: #3c3c3c;
+            color: #e0e0e0;
+            border: 1px solid #3c3c3c;
+            border-radius: 3px;
+            padding: 4px 8px;
+            selection-background-color: #264f78;
+        }
+        QLineEdit:focus {
+            border-color: #0078d4;
+        }
+        QPushButton {
+            background: #0e639c;
+            color: #ffffff;
+            border: none;
+            border-radius: 3px;
+            padding: 5px 16px;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background: #1177bb;
+        }
+        QPushButton:pressed {
+            background: #094771;
+        }
+        QPushButton:disabled {
+            background: #3c3c3c;
+            color: #707070;
+        }
+        QLabel {
+            color: #cccccc;
+            background: transparent;
+        }
+        QSlider::groove:horizontal {
+            background: #4a4a4a;
+            height: 4px;
+            border-radius: 2px;
+        }
+        QSlider::handle:horizontal {
+            background: #0078d4;
+            width: 14px;
+            height: 14px;
+            margin: -5px 0;
+            border-radius: 7px;
+        }
+        QSlider::handle:horizontal:hover {
+            background: #1a8ad4;
+        }
+    """
+
     def _init_ui(self):
+        self.setStyleSheet(self.STYLE)
+
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(12, 12, 12, 8)
-        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(10, 10, 10, 8)
+        main_layout.setSpacing(5)
 
         self.canvas = Canvas()
+        self.canvas.setStyleSheet("QFrame { border: 1px solid #3c3c3c; border-radius: 4px; }")
         main_layout.addWidget(self.canvas, stretch=1)
 
-        font = QFont()
-        font.setPointSize(12)
+        font = QFont("Segoe UI", 12)
 
         # 结果行
         result_row = QHBoxLayout()
         result_row.setSpacing(8)
-        result_row.addWidget(QLabel("Result:", font=font))
+        lbl = QLabel("Result")
+        lbl.setFont(font)
+        lbl.setStyleSheet("color: #858585;")
+        result_row.addWidget(lbl)
+
         self.result_line = QLineEdit()
         self.result_line.setReadOnly(True)
         self.result_line.setPlaceholderText("Model loading...")
         self.result_line.setFont(font)
-        self.result_line.setMinimumHeight(30)
+        self.result_line.setMinimumHeight(32)
         result_row.addWidget(self.result_line, stretch=1)
         main_layout.addLayout(result_row)
 
         # 控制行
         ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(8)
+        ctrl_row.setSpacing(6)
 
-        self.mode_label_left = QLabel("<b>Text</b>")
+        self.mode_label_left = QLabel("Text")
         ctrl_row.addWidget(self.mode_label_left)
 
         self.mode_slider = QSlider(Qt.Orientation.Horizontal)
         self.mode_slider.setRange(0, 1)
         self.mode_slider.setValue(0)
-        self.mode_slider.setFixedWidth(40)
-        self.mode_slider.setStyleSheet("""
-            QSlider::groove:horizontal { background:#ccc; height:6px; border-radius:3px; }
-            QSlider::handle:horizontal { background:#0078d4; width:16px; margin:-5px 0; border-radius:8px; }
-        """)
+        self.mode_slider.setFixedWidth(36)
         self.mode_slider.valueChanged.connect(self._on_mode_changed)
         ctrl_row.addWidget(self.mode_slider)
 
@@ -290,12 +346,20 @@ class MathPadWindow(QMainWindow):
         self._ready_timer.timeout.connect(self._on_model_ready)
         self._ready_timer.start(200)
 
+        # 初始高亮 Text 模式
+        self.mode_label_left.setStyleSheet("color: #ffffff; font-weight: bold;")
+        self.mode_label_right.setStyleSheet("color: #858585;")
+
     # ── 回调 ──
 
     def _on_mode_changed(self, value):
         self._display_mode = value
-        self.mode_label_left.setText("<b>Text</b>" if value == 0 else "Text")
-        self.mode_label_right.setText("<b>LaTeX</b>" if value == 1 else "LaTeX")
+        if value == 0:
+            self.mode_label_left.setStyleSheet("color: #ffffff; font-weight: bold;")
+            self.mode_label_right.setStyleSheet("color: #858585;")
+        else:
+            self.mode_label_left.setStyleSheet("color: #858585;")
+            self.mode_label_right.setStyleSheet("color: #ffffff; font-weight: bold;")
         if self._last_latex:
             self._show_result()
 
